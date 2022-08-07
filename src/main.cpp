@@ -16,7 +16,6 @@ const int Button1 = 35;
 TFT_eSPI tft = TFT_eSPI();
 
 AsyncUDP UDP;
-IPAddress UDP_IP(10, 10, 10, 1);
 #define UDP_PORT 4210
 
 String version = "0.51";
@@ -122,7 +121,7 @@ void connectToWifi() {
     if (!WiFi.config(
         Heartichoke_IP,
         IPAddress(192, 168, 1, 1),
-        IPAddress(255, 255, 255, 1)
+        IPAddress(255, 255, 0, 0)
     ))
         Serial.println("STA Failed to configure");
 
@@ -139,17 +138,11 @@ void connectToWifi() {
     Serial.println("IP: " + WiFi.localIP().toString());
     Serial.println("Gateway: " + WiFi.gatewayIP().toString());
 
-    drawScreen();
-}
-void createAccessPoint() {
-
-    IPAddress udp_gateway(10, 10, 10, 1);
-    IPAddress udp_subnet(255, 255, 255, 0);
-
-//    WiFi.softAPConfig(UDP_IP, udp_gateway, udp_subnet);
+    //Create our Access Point as well
     WiFi.softAP(SSID, PASS);
+    Serial.println("Begun access point at " + WiFi.softAPIP().toString());
 
-    Serial.println("Begun access point at " + UDP_IP.toString());
+    drawScreen();
 }
 
 
@@ -174,7 +167,7 @@ void sendNode(int id, StaticJsonDocument<200> data) {
     serializeJson(data["rgb"], rgb);
 
     UDP.broadcast(rgb);
-    UDP.broadcastTo(rgb, UDP_PORT);
+    UDP.broadcastTo(rgb, 4211);
 }
 
 void processSpiritRequest(String bufferStr) {
@@ -268,10 +261,8 @@ void setup() {
     Serial.begin(115200);
     connectToWifi();
 
-    // Begin Access Point
-    createAccessPoint();
-
     //Listen for UDP data
+    //We may also need to listen on the AP IP
     if(UDP.listen(Heartichoke_IP, UDP_PORT)) {
         Serial.println("UDP listening locally on IP \"" + Heartichoke_IP.toString() + ":" + UDP_PORT + "\"");
         UDP.onPacket([](AsyncUDPPacket packet) {
