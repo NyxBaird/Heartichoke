@@ -138,9 +138,9 @@ void connectToWifi() {
     Serial.println("IP: " + WiFi.localIP().toString());
     Serial.println("Gateway: " + WiFi.gatewayIP().toString());
 
-    //Create our Access Point as well
     WiFi.softAP(SSID, PASS);
-    Serial.println("Begun access point at " + WiFi.softAPIP().toString());
+    Serial.println("Begun access point at " + WiFi.softAPIP().toString() + " with " + String(WiFi.softAPSubnetCIDR()));
+
 
     drawScreen();
 }
@@ -166,6 +166,20 @@ void sendNode(int id, StaticJsonDocument<200> data) {
     char rgb[128];
     serializeJson(data["rgb"], rgb);
 
+    AsyncUDPMessage message255;
+    AsyncUDPMessage message10;
+    AsyncUDPMessage messageLocal;
+    AsyncUDPMessage messageTo;
+    message255.print("To 255");
+    message10.print("To 10");
+    messageLocal.print("To local");
+    messageTo.print("To to");
+
+    UDP.sendTo(message255, IPAddress(255, 255, 0, 0), 4211);
+    UDP.sendTo(message10, WiFi.softAPIP(), 4211);
+    UDP.sendTo(messageLocal, WiFi.localIP(), 4211);
+    UDP.sendTo(messageTo, to, 4211);
+    UDP.sendTo(messageTo, IPAddress(10, 10, 10,  2), 4211);
     UDP.broadcast(rgb);
     UDP.broadcastTo(rgb, 4211);
 }
