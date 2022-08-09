@@ -1,13 +1,19 @@
 #include <TFT_eSPI.h>
-#include <SPI.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <WiFiAP.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <ArduinoHttpClient.h>
 
+
 #include "esp_wifi.h"
 #include "heartichoke.h"
+
+//This does nothing and is just here to allow me future wiggle room on how errors are handled
+void throwError(String error) {
+    Serial.println("ERROR: " + error);
+}//Declare this at the top so it can be used wherever needed
 
 const int Button0 = 0;
 const int Button1 = 35;
@@ -22,30 +28,38 @@ IPAddress softstaticIP(192,168,5,1);
 IPAddress softgateway(192,168,5,1);
 IPAddress softsubnet(255,255,255,0);
 
-WiFiUDP udpOut;
 WiFiUDP udpIn;
-
-#define UDP_PORT_OUT 4211
 #define UDP_PORT_IN  4210
 
+
+//These are all of the devices Heartichoke will speak to...
 struct RegisteredDevice{
+    bool connected = false;
+    String identifier;
     IPAddress ip;
     String mac;
-    int port;
-    String identifier;
+    int port{};
+    WiFiUDP udpOut;
+    void sendData(const String& data) {
+        if (!connected) {
+            throwError("Tried to send \"" + data + "\" to " + identifier + " which is not connected");
+            return;
+        }
+
+        Serial.println("Sending " + ip.toString() + "@" + port + ": " + data);
+        udpOut.begin(port);
+        udpOut.beginPacket(ip, port);
+        udpOut.println(data);
+        udpOut.endPacket();
+        udpOut.stop();
+    }
 };
-//These are all of the devices Heartichoke will speak to...
 const int connectionsAvailable = 10;
 RegisteredDevice connections[connectionsAvailable];
 
 //Heartichokes designated IP Address
 IPAddress Heartichoke_IP(192, 168, 1, 216);
-String version = "0.83";
-
-//This does nothing and is just here to allow me future wiggle room on how errors are handled
-void throwError(String error) {
-    Serial.println("ERROR: " + error);
-}
+String version = "1.12";
 
 void drawScreen(String message = "");
 void drawScreen(String message) {
@@ -84,13 +98,65 @@ void drawScreen(String message) {
     }
 }
 
+void registerNodes() {
+    Serial.println("Registering nodes on core " + String(xPortGetCoreID()));
+
+    wifi_sta_list_t wifi_sta_list;
+    tcpip_adapter_sta_list_t adapter_sta_list;
+
+    memset(&wifi_sta_list, 0, sizeof(wifi_sta_list));
+    memset(&adapter_sta_list, 0, sizeof(adapter_sta_list));
+
+    esp_wifi_ap_get_sta_list(&wifi_sta_list);
+    tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list);
+
+    for (int i = 0; i < adapter_sta_list.num; i++) {
+
+        tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
+
+        Serial.print("station nr ");
+        Serial.println(i);
+
+        Serial.print("MAC: ");
+
+        for(int i = 0; i< 6; i++){
+
+            Serial.printf("%02X", station.mac[i]);
+            if(i<5)Serial.print(":");
+        }
+
+        Serial.print("\nIP: ");
+        Serial.println(ip4addr_ntoa(reinterpret_cast<const ip4_addr_t *>(&(station.ip))));
+    }
+
+    //Check if connections are active
+//    if (adapter_sta_list.num > 0) {
+//        for (auto &connection: connections) {
+//            connection.connected = Ping.ping(connection.ip, 1);
+//            if (connection.connected)
+//                Serial.println("Successfully pinged " + connection.ip.toString() + " with an avg respond time of " + String(Ping.averageTime()) + "ms");
+//        }
+//    }
+
+    Serial.println("Connected devices: ");
+    for (int c = 0; c < connectionsAvailable; c++)
+        if (connections[c].connected)
+            Serial.println("Connections[" + String(c) + "] = [" + connections[c].identifier + ", " + connections[c].ip.toString() + ", " + connections[c].mac + "]");
+
+} //Registers our connected nodes in the global connections[] array
+
+void nodeChanger(WiFiEvent_t event, WiFiEventInfo_t info) {
+    Serial.println("Event captured!");
+    registerNodes();
+} //Is called on node connection updates to re-register nodes
+
 void connectToWifi() {
     WiFi.mode(WIFI_STA);
 
     if (!WiFi.config(
-            Heartichoke_IP,
-            IPAddress(192, 168, 1, 1),
-            IPAddress(255, 255, 0, 0)
+        Heartichoke_IP,
+        IPAddress(192, 168, 1, 1),
+        IPAddress(255, 255, 0, 0)
     ))
         Serial.println("STA Failed to configure");
 
@@ -118,29 +184,12 @@ void connectToWifi() {
         WiFi.softAPConfig(softstaticIP, softgateway, softsubnet);
         Serial.println(WiFi.softAPConfig(softstaticIP, softgateway, softsubnet) ? "Ready" : "Failed!");
         delay(1000);   // hack for wrong address WiFi.softAPConfig needs time to start/finish
-        Serial.println(WiFi.softAP("heartichoke") ? "Ready" : "Failed!");
+        Serial.println(WiFi.softAP("Heartichoke") ? "Ready" : "Failed!");
         Serial.print("Soft-AP IP address = ");
         Serial.println(WiFi.softAPIP());
     }
 
-    udpOut.begin(UDP_PORT_OUT);
-    udpIn.begin(UDP_PORT_IN);
-}
-void setup()
-{
-    drawScreen("Loading...");
-
-    Serial.begin(115200);
-    pinMode(Button1, INPUT);
-
-    //connect to WiFi
-    connectToWifi();
-
-    //Register any nodes Heartichoke will need to be able to talk to here
-    connections[0].identifier = "RGB|LivingRoom";
-    connections[0].ip = IPAddress(192, 168, 5, 2);
-    connections[0].mac = "CC:50:E3:28:3C:20";
-    connections[0].port = 4211;
+    drawScreen();
 }
 
 String startRequest() {
@@ -166,19 +215,6 @@ void endRequest() {
     packetBuffer[0] = 0; //Clear our UDP buffer
 } //Final things we have to do after every incoming UDP request
 
-void sendNode(RegisteredDevice connection, String data) {
-    Serial.println("Sending " + connection.ip.toString() + "@" + connection.port + " (" + connection.identifier + "): " + data);
-
-    String ip = connection.ip.toString();
-    if (ip == "0.0.0.0") {
-        throwError("Could not find requested node: " + connection.identifier);
-        return;
-    }
-
-    udpOut.beginPacket(connection.ip, connection.port);
-    udpOut.println(data);
-    udpOut.endPacket();
-}
 void processSpiritRequest(String bufferStr) {
     Serial.println("Received from Spirit: " + bufferStr);
 
@@ -201,13 +237,13 @@ void processSpiritRequest(String bufferStr) {
             if (json["location"] == "all") {
                 for (auto & connection : connections) {
                     if (connection.identifier.indexOf("RGB|") == 0)
-                        sendNode(connection, json["rgb"]);
+                        connection.sendData(json["rgb"]);
                 }
             } else {
                 String location = json["location"];
                 for (auto & connection : connections) {
                     if (connection.identifier.indexOf(location) > -1)
-                        sendNode(connection, json["rgb"]);
+                        connection.sendData(json["rgb"]);
                 }
             }
         } else
@@ -216,11 +252,44 @@ void processSpiritRequest(String bufferStr) {
         throwError("Spirit requested no action.");
 }
 
+void setup() {
+    tft.init();
+    tft.setRotation(3);
+    tft.setSwapBytes(true);
+
+    drawScreen("Loading...");
+
+    Serial.begin(115200);
+    pinMode(Button1, INPUT);
+
+    WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
+    WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED);
+    WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+    //connect to WiFi
+    connectToWifi();
+
+    //Register any nodes Heartichoke will need to be able to talk to here
+    connections[0].identifier = "RGB|LivingRoom";
+    connections[0].ip = IPAddress(192, 168, 5, 2);
+    connections[0].mac = "CC:50:E3:28:3C:20";
+    connections[0].port = 4211;
+
+    connections[1].identifier = "RGB|Development";
+    connections[1].ip = IPAddress(192, 168, 5, 3);
+    connections[1].mac = "48:55:19:13:06:78";
+    connections[1].port = 4212;
+
+    //Start up our UDP connections
+    udpIn.begin(UDP_PORT_IN); //Start our incoming port
+}
 void loop()
 {
     udpIn.parsePacket();
     udpIn.read(packetBuffer, 255);
     if (packetBuffer[0] != 0) {
+        Serial.println("Received request on core " + String(xPortGetCoreID()));
+
         String from = startRequest();
         if (from == "UNKNOWN") {
             throwError("Denied request from unknown source.");
@@ -243,7 +312,8 @@ void loop()
         Serial.println("Sending UDP...");
 
         //Get this through connections
-        sendNode(connections[0], "Data from the heartichoke!");
+        connections[0].sendData("Data from the heartichoke!");
+
         delay(500);
     }
 }
