@@ -31,12 +31,15 @@ IPAddress softsubnet(255,255,255,0);
 WiFiUDP udpIn;
 #define UDP_PORT_IN  4210
 
+#define AP_SSID "Heartichoke"
+#define AP_PASS "basicbitchpass"
+
 
 //These are all of the devices Heartichoke will speak to...
 struct RegisteredDevice{
     bool connected = false;
     String identifier;
-    IPAddress ip;
+    IPAddress ip = IPAddress(0, 0, 0, 0);
     String mac;
     int port{};
     WiFiUDP udpOut;
@@ -98,6 +101,11 @@ void drawScreen(String message) {
     }
 }
 
+String macToString(const unsigned char* mac) {
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return String(buf);
+}
 void registerNodes() {
     Serial.println("Registering nodes on core " + String(xPortGetCoreID()));
 
@@ -110,38 +118,44 @@ void registerNodes() {
     esp_wifi_ap_get_sta_list(&wifi_sta_list);
     tcpip_adapter_get_sta_list(&wifi_sta_list, &adapter_sta_list);
 
+    bool connectedDevices[connectionsAvailable] = {false};
     for (int i = 0; i < adapter_sta_list.num; i++) {
 
         tcpip_adapter_sta_info_t station = adapter_sta_list.sta[i];
 
-        Serial.print("station nr ");
+        Serial.print("Node # ");
         Serial.println(i);
 
-        Serial.print("MAC: ");
+        String ip = ip4addr_ntoa(reinterpret_cast<const ip4_addr_t *>(&(station.ip)));
+        String mac = macToString(station.mac);
 
-        for(int i = 0; i< 6; i++){
-
-            Serial.printf("%02X", station.mac[i]);
-            if(i<5)Serial.print(":");
-        }
+        Serial.println("MAC: " + mac);
+        mac.toLowerCase();
 
         Serial.print("\nIP: ");
-        Serial.println(ip4addr_ntoa(reinterpret_cast<const ip4_addr_t *>(&(station.ip))));
+        Serial.println(ip);
+
+        for (int c = 0; c < connectionsAvailable; c++) {
+            connections[c].mac.toLowerCase();
+            if (connections[c].mac == mac) {
+                connections[c].connected = true;
+                connections[c].ip.fromString(ip);
+                connectedDevices[c] = true;
+                continue;
+            }
+        }
     }
 
-    //Check if connections are active
-//    if (adapter_sta_list.num > 0) {
-//        for (auto &connection: connections) {
-//            connection.connected = Ping.ping(connection.ip, 1);
-//            if (connection.connected)
-//                Serial.println("Successfully pinged " + connection.ip.toString() + " with an avg respond time of " + String(Ping.averageTime()) + "ms");
-//        }
-//    }
-
     Serial.println("Connected devices: ");
-    for (int c = 0; c < connectionsAvailable; c++)
+    for (int c = 0; c < connectionsAvailable; c++) {
+        if (!connectedDevices[c] && connections[c].connected) {
+            connections[c].connected = false;
+            connections[c].ip = IPAddress(0, 0, 0, 0);
+        }
+
         if (connections[c].connected)
             Serial.println("Connections[" + String(c) + "] = [" + connections[c].identifier + ", " + connections[c].ip.toString() + ", " + connections[c].mac + "]");
+    }
 
 } //Registers our connected nodes in the global connections[] array
 
@@ -184,7 +198,7 @@ void connectToWifi() {
         WiFi.softAPConfig(softstaticIP, softgateway, softsubnet);
         Serial.println(WiFi.softAPConfig(softstaticIP, softgateway, softsubnet) ? "Ready" : "Failed!");
         delay(1000);   // hack for wrong address WiFi.softAPConfig needs time to start/finish
-        Serial.println(WiFi.softAP("Heartichoke") ? "Ready" : "Failed!");
+        Serial.println(WiFi.softAP(AP_SSID, AP_PASS, 3, 1, connectionsAvailable) ? "Ready" : "Failed!");
         Serial.print("Soft-AP IP address = ");
         Serial.println(WiFi.softAPIP());
     }
@@ -271,12 +285,10 @@ void setup() {
 
     //Register any nodes Heartichoke will need to be able to talk to here
     connections[0].identifier = "RGB|LivingRoom";
-    connections[0].ip = IPAddress(192, 168, 5, 2);
     connections[0].mac = "CC:50:E3:28:3C:20";
     connections[0].port = 4211;
 
     connections[1].identifier = "RGB|Development";
-    connections[1].ip = IPAddress(192, 168, 5, 3);
     connections[1].mac = "48:55:19:13:06:78";
     connections[1].port = 4212;
 
