@@ -1,3 +1,5 @@
+bool development = false;
+
 #include <TFT_eSPI.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -6,7 +8,6 @@
 #include <ArduinoJson.h>
 #include <ArduinoHttpClient.h>
 
-
 #include "esp_wifi.h"
 #include "heartichoke.h"
 
@@ -14,6 +15,10 @@
 void throwError(String error) {
     Serial.println("ERROR: " + error);
 }//Declare this at the top so it can be used wherever needed
+
+char server[] = "hauntedhallow.xyz";
+WiFiClient client;
+HttpClient httpClient = HttpClient(client, server, 80);
 
 const int Button0 = 0;
 const int Button1 = 35;
@@ -24,8 +29,8 @@ char packetBuffer[255];
 const char* ssid       = "Garden Amenities";
 const char* password   = "Am3nit1es4b1tch35";
 
-IPAddress softstaticIP(192,168,5,1);
-IPAddress softgateway(192,168,5,1);
+IPAddress softstaticIP(192,168,5,1); //Dev mode; 192.168.6.1
+IPAddress softgateway(192,168,5,1); //Dev mode; 192.168.6.1
 IPAddress softsubnet(255,255,255,0);
 
 WiFiUDP udpIn;
@@ -33,6 +38,10 @@ WiFiUDP udpIn;
 
 #define AP_SSID "Heartichoke"
 #define AP_PASS "basicbitchpass"
+
+//Heartichokes designated IP Address
+IPAddress Heartichoke_IP(192, 168, 1, 216); //Dev mode; 192.168.1.116
+String version = "1.13";
 
 
 //These are all of the devices Heartichoke will speak to...
@@ -49,21 +58,26 @@ struct RegisteredDevice{
             return;
         }
 
+        if (ip.toString() == "0.0.0.0")
+            throwError("Reconnect " + identifier);
+
         Serial.println("Sending " + ip.toString() + "@" + port + ": " + data);
-        udpOut.begin(port);
         udpOut.beginPacket(ip, port);
         udpOut.println(data);
         udpOut.endPacket();
-        udpOut.stop();
     }
 };
 const int connectionsAvailable = 10;
 RegisteredDevice connections[connectionsAvailable];
 
-//Heartichokes designated IP Address
-IPAddress Heartichoke_IP(192, 168, 1, 216);
-String version = "1.12";
+int connectedDevices() {
+    int connected = 0;
+    for (auto & connection : connections)
+        if (connection.connected)
+            connected++;
 
+    return connected;
+}
 void drawScreen(String message = "");
 void drawScreen(String message) {
     Serial.println("Drawing screen...");
@@ -75,12 +89,17 @@ void drawScreen(String message) {
     //Draw IP and version
     tft.setTextColor(TFT_BLACK);
     tft.drawString("IP: " + WiFi.localIP().toString(), 3, 126, 1);
-    tft.drawString("v" + version, 207, 126, 1);
+
+    if (development) {
+        tft.setTextColor(TFT_RED);
+        tft.drawString("DevBoard" + version, 190, 126, 1);
+    } else
+        tft.drawString("v" + version, 207, 126, 1);
 
     //Draw temp nodes and rgb nodes up top
     tft.setTextColor(TFT_BLUE);
     tft.drawString("Connected!", 3, 3, 2);
-    tft.drawString("Nodes: " + String(WiFi.softAPgetStationNum()), 3, 17, 2);
+    tft.drawString("Nodes: " + String(connectedDevices()), 3, 17, 2);
 
     //Node count = WiFi.softAPgetStationNum()
 
@@ -157,8 +176,8 @@ void registerNodes() {
             Serial.println("Connections[" + String(c) + "] = [" + connections[c].identifier + ", " + connections[c].ip.toString() + ", " + connections[c].mac + "]");
     }
 
+    drawScreen();
 } //Registers our connected nodes in the global connections[] array
-
 void nodeChanger(WiFiEvent_t event, WiFiEventInfo_t info) {
     Serial.println("Event captured!");
     registerNodes();
@@ -170,7 +189,9 @@ void connectToWifi() {
     if (!WiFi.config(
         Heartichoke_IP,
         IPAddress(192, 168, 1, 1),
-        IPAddress(255, 255, 0, 0)
+        IPAddress(255, 255, 0, 0),
+        IPAddress(8, 8, 8, 8),
+        IPAddress(8, 8, 4, 4)
     ))
         Serial.println("STA Failed to configure");
 
@@ -198,7 +219,14 @@ void connectToWifi() {
         WiFi.softAPConfig(softstaticIP, softgateway, softsubnet);
         Serial.println(WiFi.softAPConfig(softstaticIP, softgateway, softsubnet) ? "Ready" : "Failed!");
         delay(1000);   // hack for wrong address WiFi.softAPConfig needs time to start/finish
-        Serial.println(WiFi.softAP(AP_SSID, AP_PASS, 3, 1, connectionsAvailable) ? "Ready" : "Failed!");
+
+        String strid = AP_SSID;
+        if (development)
+            strid += "DEV";
+
+        char* ssid;
+//        strid.toCharArray(ssid, );
+        Serial.println(WiFi.softAP(ssid, AP_PASS, 3, 1, connectionsAvailable) ? "Ready" : "Failed!");
         Serial.print("Soft-AP IP address = ");
         Serial.println(WiFi.softAPIP());
     }
@@ -229,6 +257,35 @@ void endRequest() {
     packetBuffer[0] = 0; //Clear our UDP buffer
 } //Final things we have to do after every incoming UDP request
 
+void sendPost(String uri, String data) {
+    httpClient.beginRequest();
+    int responseCode = httpClient.post(uri);
+    Serial.println("Sending " + uri + "@" + String(responseCode) + " | " + data);
+    httpClient.sendHeader("Content-Type", "application/json");
+    httpClient.sendHeader("Content-Length", data.length());
+    httpClient.beginBody();
+    httpClient.print(data);
+    httpClient.endRequest();
+}
+void processTempNode(String bufferStr) {
+    Serial.println("Received from Temp Node: " + bufferStr);
+
+    StaticJsonDocument<200> json;
+    DeserializationError error = deserializeJson(json, bufferStr);
+    if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        endRequest();
+        return;
+    }
+
+    if (!json.containsKey("data")) {
+        throwError("Received request from Temp Node with no data!");
+    }
+
+    String data = json["data"];
+    sendPost("/api/tempNode", data);
+}
 void processSpiritRequest(String bufferStr) {
     Serial.println("Received from Spirit: " + bufferStr);
 
@@ -276,6 +333,14 @@ void setup() {
     Serial.begin(115200);
     pinMode(Button1, INPUT);
 
+    //If in development put us on the development network
+    if (development) {
+//        Heartichoke_IP.fromString("192.168.1.116");
+//
+//        softstaticIP.fromString("192.168.6.1");
+//        softgateway.fromString("192.168.6.1");
+    }
+
     WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
     WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED);
     WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
@@ -287,10 +352,17 @@ void setup() {
     connections[0].identifier = "RGB|LivingRoom";
     connections[0].mac = "CC:50:E3:28:3C:20";
     connections[0].port = 4211;
+    connections[0].udpOut.begin(connections[0].port);
 
     connections[1].identifier = "RGB|Development";
     connections[1].mac = "48:55:19:13:06:78";
     connections[1].port = 4212;
+    connections[1].udpOut.begin(connections[1].port);
+
+    connections[2].identifier = "Temp|Outside";
+    connections[2].mac = "5C:CF:7F:33:6F:50";
+    connections[2].port = 4213;
+    connections[2].udpOut.begin(connections[2].port);
 
     //Start up our UDP connections
     udpIn.begin(UDP_PORT_IN); //Start our incoming port
@@ -311,8 +383,8 @@ void loop()
 
         Serial.println("Processing data from " + from);
 
-//        if (from == "LocalNode")
-//            processLocalNode(String(packetBuffer));
+        if (from.indexOf("Temp|") == 0)
+            processTempNode(String(packetBuffer));
 
         if (from == "Spirit")
             processSpiritRequest(String(packetBuffer));
