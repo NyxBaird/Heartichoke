@@ -1,4 +1,4 @@
-bool development = false;
+const bool development = false;
 
 #include <TFT_eSPI.h>
 #include <Wire.h>
@@ -65,6 +65,7 @@ struct RegisteredDevice{
         udpOut.beginPacket(ip, port);
         udpOut.println(data);
         udpOut.endPacket();
+        yield();
     }
 };
 const int connectionsAvailable = 10;
@@ -195,6 +196,8 @@ void connectToWifi() {
     ))
         Serial.println("STA Failed to configure");
 
+    Serial.println("Connecting to " + String(ssid));
+
     WiFi.begin(ssid, password);
     for (int x = 1; x < 100; x++) {
         delay(500);
@@ -220,13 +223,14 @@ void connectToWifi() {
         Serial.println(WiFi.softAPConfig(softstaticIP, softgateway, softsubnet) ? "Ready" : "Failed!");
         delay(1000);   // hack for wrong address WiFi.softAPConfig needs time to start/finish
 
-        String strid = AP_SSID;
+        char* apSsid;
         if (development)
-            strid += "DEV";
+            apSsid = "HeartichokeDEV";
+        else
+            apSsid = AP_SSID;
 
-        char* ssid;
-//        strid.toCharArray(ssid, );
-        Serial.println(WiFi.softAP(ssid, AP_PASS, 3, 1, connectionsAvailable) ? "Ready" : "Failed!");
+        Serial.println("Starting AP " + String(apSsid));
+        Serial.println(WiFi.softAP(apSsid, AP_PASS, 3, 1, connectionsAvailable) ? "Ready" : "Failed!");
         Serial.print("Soft-AP IP address = ");
         Serial.println(WiFi.softAPIP());
     }
@@ -286,6 +290,26 @@ void processTempNode(String bufferStr) {
     String data = json["data"];
     sendPost("/api/tempNode", data);
 }
+void processPlantNanny(String bufferStr) {
+    Serial.println("Received from PlantNanny: " + bufferStr);
+
+    StaticJsonDocument<200> json;
+    DeserializationError error = deserializeJson(json, bufferStr);
+    if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        endRequest();
+        return;
+    }
+
+    if (!json.containsKey("data")) {
+        throwError("Received request from PlantNanny with no data!");
+        return;
+    }
+
+    String data = json["data"];
+    sendPost("/api/plantNanny", data);
+}
 void processSpiritRequest(String bufferStr) {
     Serial.println("Received from Spirit: " + bufferStr);
 
@@ -335,10 +359,10 @@ void setup() {
 
     //If in development put us on the development network
     if (development) {
-//        Heartichoke_IP.fromString("192.168.1.116");
-//
-//        softstaticIP.fromString("192.168.6.1");
-//        softgateway.fromString("192.168.6.1");
+        Heartichoke_IP.fromString("192.168.1.116");
+
+        softstaticIP.fromString("192.168.6.1");
+        softgateway.fromString("192.168.6.1");
     }
 
     WiFi.onEvent(nodeChanger, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
@@ -349,20 +373,25 @@ void setup() {
     connectToWifi();
 
     //Register any nodes Heartichoke will need to be able to talk to here
-    connections[0].identifier = "RGB|LivingRoom";
-    connections[0].mac = "CC:50:E3:28:3C:20";
-    connections[0].port = 4211;
-    connections[0].udpOut.begin(connections[0].port);
+    connections[0].identifier = "RGB|Development";
+    connections[0].mac = "48:55:19:13:06:78";
+    connections[0].port = 4212;
+    connections[0].udpOut.begin(connections[1].port);
 
-    connections[1].identifier = "RGB|Development";
-    connections[1].mac = "48:55:19:13:06:78";
-    connections[1].port = 4212;
-    connections[1].udpOut.begin(connections[1].port);
+    connections[1].identifier = "RGB|LivingRoom";
+    connections[1].mac = "CC:50:E3:28:3C:20";
+    connections[1].port = 4211;
+    connections[1].udpOut.begin(connections[0].port);
 
     connections[2].identifier = "Temp|Outside";
     connections[2].mac = "5C:CF:7F:33:6F:50";
     connections[2].port = 4213;
     connections[2].udpOut.begin(connections[2].port);
+
+    connections[3].identifier = "PlantNanny";
+    connections[3].mac = "EC:FA:BC:99:03:3D";
+    connections[3].port = 4214;
+    connections[3].udpOut.begin(connections[3].port);
 
     //Start up our UDP connections
     udpIn.begin(UDP_PORT_IN); //Start our incoming port
@@ -385,6 +414,9 @@ void loop()
 
         if (from.indexOf("Temp|") == 0)
             processTempNode(String(packetBuffer));
+
+        if (from.indexOf("PlantNanny") == 0)
+            processPlantNanny(String(packetBuffer));
 
         if (from == "Spirit")
             processSpiritRequest(String(packetBuffer));
