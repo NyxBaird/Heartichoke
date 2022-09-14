@@ -26,8 +26,8 @@ const int Button1 = 35;
 TFT_eSPI tft = TFT_eSPI();
 
 char packetBuffer[255];
-const char* ssid       = "Garden Amenities";
-const char* password   = "Am3nit1es4b1tch35";
+const char* ssid       = "###";
+const char* password   = "###";
 
 IPAddress softstaticIP(192,168,5,1); //Dev mode; 192.168.6.1
 IPAddress softgateway(192,168,5,1); //Dev mode; 192.168.6.1
